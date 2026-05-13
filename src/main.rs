@@ -1,7 +1,7 @@
-use rand::RngCore;
+use rand::{Rng, RngCore};
 use std::env;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Seek, SeekFrom, Write};
 use std::path::Path;
 
 const BUFFER_SIZE: usize = 64 * 1024; // 64 KB
@@ -21,10 +21,18 @@ fn shred(path: &Path, passes: u32) -> io::Result<()> {
     let file_len = metadata.len();
     let mut file = fs::OpenOptions::new().write(true).open(path)?;
 
+    if passes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "passes must be greater than 0",
+        ));
+    }
+
     let mut rng = rand::thread_rng();
     let mut buffer = vec![0u8; BUFFER_SIZE];
 
     for pass in 1..=passes {
+        file.seek(SeekFrom::Start(0))?;
         let mut remaining = file_len;
         while remaining > 0 {
             let chunk_size = remaining.min(BUFFER_SIZE as u64) as usize;
@@ -41,11 +49,18 @@ fn shred(path: &Path, passes: u32) -> io::Result<()> {
     // Rename to a random string to erase filesystem metadata
     let parent = path.parent().unwrap_or(Path::new("."));
     let chars: Vec<char> = "abcdefghijklmnopqrstuvwxyz0123456789".chars().collect();
-    let random_name: String = (0..12).map(|_| {
-        let idx = (rng.next_u32() as usize) % chars.len();
-        chars[idx]
-    }).collect();
-    let random_path = parent.join(&random_name);
+    let random_path = loop {
+        let random_name: String = (0..12).map(|_| {
+            let idx = rng.gen_range(0..chars.len());
+            chars[idx]
+        }).collect();
+        let candidate = parent.join(&random_name);
+        match candidate.try_exists() {
+            Ok(false) => break candidate,
+            Ok(true) => continue,
+            Err(_) => break candidate,
+        }
+    };
     fs::rename(path, &random_path)?;
 
     fs::remove_file(&random_path)?;
